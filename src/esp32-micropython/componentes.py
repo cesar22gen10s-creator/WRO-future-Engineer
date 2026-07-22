@@ -92,9 +92,11 @@ class Encoder_AS5600:
         return self._pasos_acumulados
 
     def vueltas(self):
-        return self._pasos_acumulados / self.PASOS_POR_VUELTA
-
-
+        return -self._pasos_acumulados / self.PASOS_POR_VUELTA
+    
+class FlyingFlash:
+    def __init__(self, pin):
+        self.pin_out = Pin(pin, Pin.IN)
 
 class SonarBit:
     def __init__(self, trigger_pin, echo_pin, distancia_max_cm=400):
@@ -109,9 +111,7 @@ class SonarBit:
         self.timeout_us = int((distancia_max_cm * 2 * 29.1))
 
     def _pulso_trigger(self):
-        """
-        Envía el pulso al ultrasónico.
-        """
+
         self.trigger.value(0)
         time.sleep_us(2)
         self.trigger.value(1)
@@ -119,10 +119,7 @@ class SonarBit:
         self.trigger.value(0)
 
     def leer_cm(self):
-        """
-        Devuelve la distancia en cm.
-        Si no hay lectura válida, devuelve None.
-        """
+
         self._pulso_trigger()
 
         try:
@@ -131,7 +128,7 @@ class SonarBit:
             return None
 
         if duracion < 0:
-            return None
+            return None 
 
         # Velocidad del sonido aproximada:
         # 343 m/s a 20°C
@@ -149,7 +146,6 @@ class SonarBit:
         if distancia_cm is None:
             return None
         return distancia_cm * 10
-
 
 class MotorPuenteH:
     def __init__(self, pin_ena, pin_in1, pin_in2, freq_pwm=1000):
@@ -175,17 +171,17 @@ class MotorPuenteH:
 
     def _poner_direccion(self, direccion):
         if direccion == "adelante":
-            self.in1.value(1)
-            self.in2.value(0)
-        elif direccion == "atras":
             self.in1.value(0)
             self.in2.value(1)
+        elif direccion == "atras":
+            self.in1.value(1)
+            self.in2.value(0)
         else:
             raise ValueError("La direccion debe ser 'adelante' o 'atras'")
 
         self.direccion_actual = direccion
 
-    def _mover_suave(self, desde, hasta, paso=20, delay_ms=50):
+    def _mover_suave(self, desde, hasta, paso=400, delay_ms=50):
         if desde == hasta:
             self._aplicar_velocidad(hasta)
             return
@@ -202,7 +198,29 @@ class MotorPuenteH:
         # asegura valor final exacto
         self._aplicar_velocidad(hasta)
 
-    def acelerar(self, velocidad_objetivo, direccion="adelante", paso=20, delay_ms=50):
+    def mover_directo(self, velocidad, direccion=0):
+
+        velocidad = self._limitar_velocidad(velocidad)
+
+        if direccion == 0 or velocidad == 0:
+            self.detener()
+            return
+
+        if direccion == 1:
+            if self.direccion_actual != "adelante":
+                self._poner_direccion("adelante")
+            self._aplicar_velocidad(velocidad)
+            return
+
+        if direccion == -1:
+            if self.direccion_actual != "atras":
+                self._poner_direccion("atras")
+            self._aplicar_velocidad(velocidad)
+            return
+
+        raise ValueError("direccion debe ser 0, 1 o -1")
+
+    def acelerar(self, velocidad_objetivo, direccion="adelante", paso=200, delay_ms=50):
         velocidad_objetivo = self._limitar_velocidad(velocidad_objetivo)
 
         # si nunca se ha definido direccion, la fija
@@ -228,11 +246,14 @@ class BMI160:
     REG_CHIP_ID    = 0x00
     REG_ERR        = 0x02
     REG_PMU_STATUS = 0x03
+    REG_ACC_X_L    = 0x12
     REG_GYR_X_L    = 0x0C
     REG_SENSORTIME = 0x18
     REG_CMD        = 0x7E
+    REG_ACC_CONF   = 0x40
+    REG_ACC_RANGE  = 0x41
     REG_GYR_CONF   = 0x42
-    REG_GYR_RANGE  = 0x43 #ajustar grados / tiempo 
+    REG_GYR_RANGE  = 0x43 #ajustar grados / tiempo
 
     CHIP_ID = 0xD1
 
@@ -253,8 +274,16 @@ class BMI160:
         # Ajustable
         self.umbral_ruido_dps = 0.8
 
-        # Tiempo interno para integración
+        # Tiempo interno para integración de orientación
         self._t_anterior_us = None
+
+        # Velocidad lineal en X (m/s) por integración del acelerómetro
+        self.velocidad_x = 0.0
+        self.bias_ax = 0.0
+        # 1 LSB a ±2g = 0.000598 m/s²  (actualizado en iniciar() según rango)
+        self.lsb_por_ms2 = 0.000598
+        self.umbral_ruido_ms2 = 0.05
+        self._t_vel_anterior_us = None
 
     # =========================
     # Bajo nivel (lectura y escritura de bytes)
@@ -344,11 +373,21 @@ class BMI160:
         else:
             raise ValueError("Rango no válido, use 125, 250, 500, 1000, 2000")
         
+        # Configurar acelerómetro: ODR 100 Hz, modo normal
+        self._write_reg(self.REG_ACC_CONF, 0x28)
+        # Rango ±2g → escala más fina para detección de velocidad
+        self._write_reg(self.REG_ACC_RANGE, 0x03)
+        self.lsb_por_ms2 = 0.000598  # 1 LSB = ~0.000598 m/s² a ±2g
+
         time.sleep_ms(10)
 
         self.angulo_z = 0.0
         self.bias_gz = 0.0
         self._t_anterior_us = time.ticks_us()
+
+        self.velocidad_x = 0.0
+        self.bias_ax = 0.0
+        self._t_vel_anterior_us = time.ticks_us()
 
     # =========================
     # Lecturas
@@ -376,6 +415,21 @@ class BMI160:
         ticks39us = data[0] | (data[1] << 8) | (data[2] << 16)
         return ticks39us
 
+    def leer_accel_raw(self):
+        data = self._read_reg(self.REG_ACC_X_L, 6)
+        ax = self._s16_le(data[0], data[1])
+        ay = self._s16_le(data[2], data[3])
+        az = self._s16_le(data[4], data[5])
+        return ax, ay, az
+
+    def leer_accel_ms2(self):
+        ax, ay, az = self.leer_accel_raw()
+        return (
+            ax * self.lsb_por_ms2,
+            ay * self.lsb_por_ms2,
+            az * self.lsb_por_ms2,
+        )
+
     # =========================
     # Calibración
     # =========================
@@ -397,6 +451,56 @@ class BMI160:
         self.angulo_z = 0.0
         self._t_anterior_us = time.ticks_us()
         print("Bias GZ:", self.bias_gz)
+
+    def calibrar_bias_accel(self, muestras=300, delay_ms=5):
+        print("No muevas el carro. Calibrando bias del acelerómetro X...")
+        suma = 0.0
+        for _ in range(20):
+            self.leer_accel_ms2()
+            time.sleep_ms(2)
+        for _ in range(muestras):
+            ax, _, _ = self.leer_accel_ms2()
+            suma += ax
+            time.sleep_ms(delay_ms)
+        self.bias_ax = suma / muestras
+        self.velocidad_x = 0.0
+        self._t_vel_anterior_us = time.ticks_us()
+        print("Bias AX (m/s²):", self.bias_ax)
+
+    # =========================
+    # Velocidad lineal X
+    # =========================
+    def reset_velocidad(self, valor=0.0):
+        self.velocidad_x = valor
+        self._t_vel_anterior_us = time.ticks_us()
+
+    def actualizar_velocidad_x(self):
+        ahora_us = time.ticks_us()
+
+        if self._t_vel_anterior_us is None:
+            self._t_vel_anterior_us = ahora_us
+            ax_ms2, _, _ = self.leer_accel_ms2()
+            return self.velocidad_x, ax_ms2 - self.bias_ax
+
+        dt_us = time.ticks_diff(ahora_us, self._t_vel_anterior_us)
+        self._t_vel_anterior_us = ahora_us
+        dt = dt_us / 1_000_000.0
+
+        ax_ms2, _, _ = self.leer_accel_ms2()
+        ax_corregido = ax_ms2 - self.bias_ax
+
+        if dt <= 0 or dt > 0.2:
+            return self.velocidad_x, ax_corregido
+
+        if abs(ax_corregido) < self.umbral_ruido_ms2:
+            ax_corregido = 0.0
+
+        self.velocidad_x += ax_corregido * dt
+        return self.velocidad_x, ax_corregido
+
+    def velocidad_sobre_umbral(self, umbral_ms):
+        """Retorna True si la velocidad estimada supera el umbral (m/s)."""
+        return abs(self.velocidad_x) >= umbral_ms
 
     # =========================
     # Orientación
@@ -441,263 +545,20 @@ class BMI160:
 
         return self.angulo_z, gz_corregido
 
-class TCS3200:
-    def __init__(self, oe, s0, s1, s2, s3, out_pin):
-        self.oe = Pin(oe, Pin.OUT)
-        self.s0 = Pin(s0, Pin.OUT)
-        self.s1 = Pin(s1, Pin.OUT)
-        self.s2 = Pin(s2, Pin.OUT)
-        self.s3 = Pin(s3, Pin.OUT)
-        self.out = Pin(out_pin, Pin.IN)
-
-        self.habilitar(True)
-        self.set_escala(20)
-
-        # perfiles personalizados:
-        # nombre -> {
-        #   "rgb": (rn, gn, bn),
-        #   "clear_min": valor_minimo_opcional,
-        #   "clear_max": valor_maximo_opcional,
-        # }
-        self.perfiles = {}
-
-        # filtro temporal para uso en movimiento
-        self._ultima_zona_cruda = None
-        self._conteo_estable = 0
-        self._zona_confirmada = None
-        self._ultimo_cambio_ms = time.ticks_ms()
-
-    def habilitar(self, activo=True):
-        # OE activo en bajo
-        self.oe.value(0 if activo else 1)
-
-    def set_escala(self, porcentaje):
-        if porcentaje == 2:
-            self.s0.value(0)
-            self.s1.value(1)
-        elif porcentaje == 20:
-            self.s0.value(1)
-            self.s1.value(0)
-        elif porcentaje == 100:
-            self.s0.value(1)
-            self.s1.value(1)
-        else:
-            self.s0.value(0)
-            self.s1.value(0)
-
-    def set_filtro(self, color):
-        if color == "rojo":
-            self.s2.value(0)
-            self.s3.value(0)
-        elif color == "azul":
-            self.s2.value(0)
-            self.s3.value(1)
-        elif color == "clear":
-            self.s2.value(1)
-            self.s3.value(0)
-        elif color == "verde":
-            self.s2.value(1)
-            self.s3.value(1)
-        else:
-            raise ValueError("Color invalido")
-
-    def leer_frecuencia(self, muestras=3, timeout_us=120000):
-        total_periodo = 0
-        validas = 0
-
-        for _ in range(muestras):
-            t_alto = time_pulse_us(self.out, 1, timeout_us)
-            t_bajo = time_pulse_us(self.out, 0, timeout_us)
-
-            if t_alto > 0 and t_bajo > 0:
-                total_periodo += (t_alto + t_bajo)
-                validas += 1
-
-        if validas == 0:
-            return None
-
-        periodo_promedio = total_periodo / validas
-        return 1_000_000 / periodo_promedio
-
-    def leer_rgb(self):
-        resultado = {}
-
-        for color in ("rojo", "verde", "azul", "clear"):
-            self.set_filtro(color)
-            time.sleep_ms(2)  # pequeño tiempo de asentamiento
-            resultado[color] = self.leer_frecuencia(muestras=3)
-
-        return resultado
-
-    def leer_normalizado(self):
-        datos = self.leer_rgb()
-
-        r = datos["rojo"]
-        g = datos["verde"]
-        b = datos["azul"]
-        c = datos["clear"]
-
-        if None in (r, g, b, c) or c <= 0:
-            return None
-
-        return {
-            "rojo": r,
-            "verde": g,
-            "azul": b,
-            "clear": c,
-            "rn": r / c,
-            "gn": g / c,
-            "bn": b / c,
-        }
-
-    def registrar_perfil(self, nombre, rn, gn, bn, clear_min=0, clear_max=999999):
-        self.perfiles[nombre] = {
-            "rgb": (rn, gn, bn),
-            "clear_min": clear_min,
-            "clear_max": clear_max,
-        }
-
-    def registrar_perfil_desde_lectura(self, nombre, lecturas_promedio=8, pausa_ms=60):
-        suma_rn = 0.0
-        suma_gn = 0.0
-        suma_bn = 0.0
-        suma_c = 0.0
-        validas = 0
-
-        for _ in range(lecturas_promedio):
-            dato = self.leer_normalizado()
-            if dato is not None:
-                suma_rn += dato["rn"]
-                suma_gn += dato["gn"]
-                suma_bn += dato["bn"]
-                suma_c += dato["clear"]
-                validas += 1
-            time.sleep_ms(pausa_ms)
-
-        if validas == 0:
-            return None
-
-        prom_rn = suma_rn / validas
-        prom_gn = suma_gn / validas
-        prom_bn = suma_bn / validas
-        prom_c = suma_c / validas
-
-        # margen razonable para clear
-        clear_min = prom_c * 0.65
-        clear_max = prom_c * 1.35
-
-        self.registrar_perfil(
-            nombre,
-            prom_rn,
-            prom_gn,
-            prom_bn,
-            clear_min=clear_min,
-            clear_max=clear_max
-        )
-
-        return {
-            "nombre": nombre,
-            "rn": prom_rn,
-            "gn": prom_gn,
-            "bn": prom_bn,
-            "clear_prom": prom_c,
-            "clear_min": clear_min,
-            "clear_max": clear_max,
-        }
-
-    def _distancia(self, rn, gn, bn, perfil_rgb):
-        pr, pg, pb = perfil_rgb
-        return math.sqrt(
-            (rn - pr) ** 2 +
-            (gn - pg) ** 2 +
-            (bn - pb) ** 2
-        )
-
-    def clasificar_crudo(self, umbral_distancia=0.08):
-        dato = self.leer_normalizado()
-        if dato is None:
-            return None, None
-
-        rn = dato["rn"]
-        gn = dato["gn"]
-        bn = dato["bn"]
-        c = dato["clear"]
-
-        mejor_nombre = None
-        mejor_dist = None
-
-        for nombre, perfil in self.perfiles.items():
-            if not (perfil["clear_min"] <= c <= perfil["clear_max"]):
-                continue
-
-            dist = self._distancia(rn, gn, bn, perfil["rgb"])
-
-            if mejor_dist is None or dist < mejor_dist:
-                mejor_dist = dist
-                mejor_nombre = nombre
-
-        if mejor_nombre is None:
-            return "desconocido", dato
-
-        if mejor_dist > umbral_distancia:
-            return "desconocido", dato
-
-        return mejor_nombre, dato
-
-    def clasificar_estable(self, umbral_distancia=0.08, repeticiones=3, bloqueo_ms=250):
-        zona_cruda, dato = self.clasificar_crudo(umbral_distancia=umbral_distancia)
-
-        ahora = time.ticks_ms()
-
-        if zona_cruda == self._ultima_zona_cruda:
-            self._conteo_estable += 1
-        else:
-            self._ultima_zona_cruda = zona_cruda
-            self._conteo_estable = 1
-
-        evento = None
-
-        if (
-            zona_cruda not in (None, "desconocido")
-            and self._conteo_estable >= repeticiones
-            and zona_cruda != self._zona_confirmada
-            and time.ticks_diff(ahora, self._ultimo_cambio_ms) > bloqueo_ms
-        ):
-            self._zona_confirmada = zona_cruda
-            self._ultimo_cambio_ms = ahora
-            evento = zona_cruda
-
-        return {
-            "zona_cruda": zona_cruda,
-            "zona_confirmada": self._zona_confirmada,
-            "evento": evento,   # solo se activa cuando entra estable a una nueva zona
-            "dato": dato,
-            "conteo_estable": self._conteo_estable,
-        }
-    
-
 class WonderCam:
-    """Driver para la cámara Hiwonder WonderCam vía I2C."""
-
-    # Dirección I2C por defecto. El documento no la especifica, pero
-    # las WonderCam de Hiwonder suelen usar 0x32. Verificá con is_present()
-    # o con i2c.scan() si no responde.
     DEFAULT_ADDR = 0x32
-
-    # ---- Números de función (registro SYS_CURRENT_FUNC, 0x0035) ----
     FUNC_NONE           = 0
     FUNC_FACE           = 1   # Reconocimiento facial
     FUNC_OBJECT         = 2   # Reconocimiento de objetos
     FUNC_CLASSIFICATION = 3   # Clasificación de imagen
     FUNC_FEATURE        = 4   # Aprendizaje de características
     FUNC_COLOR          = 5   # Reconocimiento de color (inferido:
-                              # el doc deja el 5 libre y describe
-                              # registros de color en 0x1000)
+                            # el doc deja el 5 libre y describe
+                            # registros de color en 0x1000)
     FUNC_LINE           = 6   # Seguimiento visual de línea
     FUNC_TAG            = 7   # AprilTag
     FUNC_QR             = 8   # QR
     FUNC_BARCODE        = 9   # Código de barras
-
     FUNC_NAMES = {
         0: "Ninguna",
         1: "Reconocimiento facial",
@@ -710,82 +571,46 @@ class WonderCam:
         8: "Lectura QR",
         9: "Lectura de código de barras",
     }
-
     # ---- Registros del sistema ----
     REG_FIRMWARE     = 0x0000   # 16 bytes ASCII tipo "v0.6.5"
-    REG_LIGHT        = 0x0030   # luz de relleno: 0=off, 1=on
-    REG_CURRENT_FUNC = 0x0035   # número de función (RW)
-
+    REG_LIGHT        = 0x3000   # luz de relleno: 0=off, 1=on
+    REG_CURRENT_FUNC = 0x3500   # número de función (RW)
     # ---- Registros de detección de color ----
-    REG_COLOR_BASE      = 0x1000   # leer aquí refresca resultados
-    REG_COLOR_NUM       = 0x1001   # cantidad de colores detectados
+    REG_COLOR_BASE      = 0x0010   # leer aquí refresca resultados
+    REG_COLOR_NUM       = 0x0110   # cantidad de colores detectados
     REG_COLOR_IDS       = 0x1002   # IDs (1 byte/color, hasta 0x1029)
-    REG_COLOR_RESULT1   = 0x1030   # primer bloque de 16 bytes
-    COLOR_RESULT_STRIDE = 0x10     # 16 bytes por resultado
-
+    REG_COLOR_RESULT1   = 0x3010   # primer bloque de 16 bytes
+    COLOR_RESULT_STRIDE = 0x1000   # 16 bytes por resultado
     # ============================================================
     #   Constructor
     # ============================================================
     def __init__(self, i2c, addr=DEFAULT_ADDR):
-        """
-        Parámetros:
-            i2c  : instancia de machine.I2C ya inicializada
-            addr : dirección I2C de la cámara (default 0x32)
-        """
         self.i2c = i2c
         self.addr = addr
-
     # ============================================================
-    #   I/O de bajo nivel
+    # bajo nivel
     # ============================================================
     def _read(self, reg, n):
-        """Lee n bytes empezando en el registro 'reg' (16 bits)."""
         return self.i2c.readfrom_mem(self.addr, reg, n, addrsize=16)
-
     def _write(self, reg, data):
-        """Escribe en el registro 'reg' (16 bits)."""
         if isinstance(data, int):
             data = bytes([data & 0xFF])
         self.i2c.writeto_mem(self.addr, reg, data, addrsize=16)
-
     def is_present(self):
-        """True si la cámara responde en el bus I2C."""
         return self.addr in self.i2c.scan()
-
-    # ============================================================
-    #   1) FIRMWARE
-    # ============================================================
     def get_firmware_version(self):
-        """
-        Lee la versión del firmware en 0x0000 (16 bytes ASCII).
-        Devuelve un string limpio, ej: 'v0.6.5'.
-        """
         raw = self._read(self.REG_FIRMWARE, 16)
         cleaned = raw.split(b'\x00')[0]   # cortar en el primer null
         try:
             return cleaned.decode('utf-8').strip()
         except Exception:
             return str(cleaned)
-
-    # ============================================================
-    #   2) MODO ACTUAL
-    # ============================================================
     def get_current_function(self):
-        """Devuelve el número de función actualmente activo."""
         return self._read(self.REG_CURRENT_FUNC, 1)[0]
-
     def get_current_function_name(self):
-        """Devuelve el nombre legible del modo actual."""
         f = self.get_current_function()
-        return self.FUNC_NAMES.get(f, "Desconocida ({})".format(f))
-
+        return self.FUNC_NAMES.get(f, "Function ({})".format(f))
     def set_function(self, func_num, timeout_s=3.5):
-        """
-        Cambia la función y espera a que la cámara la confirme.
-        Según el doc, el cambio puede tardar de 0.X a 3 segundos.
-
-        Devuelve True si el cambio se confirmó, False si venció el timeout.
-        """
         self._write(self.REG_CURRENT_FUNC, func_num)
         deadline = time.ticks_add(time.ticks_ms(), int(timeout_s * 1000))
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
@@ -793,49 +618,19 @@ class WonderCam:
                 return True
             time.sleep_ms(100)
         return False
-
-    # ============================================================
-    #   3) DETECCIÓN DE COLOR
-    # ============================================================
     def get_color_detections(self):
-        """
-        Devuelve una lista con los colores detectados en el cuadro actual.
-        Cada elemento es un dict:
-            {
-              'id': int,    # ID del color
-              'x' : int,    # centro X (16-bit con signo)
-              'y' : int,    # centro Y
-              'w' : int,    # ancho
-              'h' : int,    # alto
-            }
-
-        IMPORTANTE: la cámara debe estar en modo color (función 5).
-        Si está en otro modo los resultados pueden ser cero o viejos.
-
-        Optimización (§⑦ del doc): leemos los primeros 48 bytes de un
-        tirón (resumen + IDs) y sólo después pedimos las cajas de los
-        colores realmente detectados, ahorrando tráfico I2C.
-        """
-        # Refrescar resultados leyendo el registro base
         self._read(self.REG_COLOR_BASE, 1)
-
-        # Leer cabecera de 48 bytes: 0x1000..0x102F
-        #   offset 0  (0x1000) -> función actual / refresh
-        #   offset 1  (0x1001) -> número de colores
-        #   offset 2.. (0x1002) -> IDs (1 byte cada uno)
         header = self._read(self.REG_COLOR_BASE, 48)
+        time.sleep_ms(200)
         num = header[1]
         if num == 0:
             return []
-
         results = []
         for i in range(num):
             color_id = header[2 + i]
-            # Cada resultado: 16 bytes a partir de 0x1030
-            # Los primeros 8 bytes son X, Y, W, H (16-bit signed, little-endian)
             block_addr = self.REG_COLOR_RESULT1 + i * self.COLOR_RESULT_STRIDE
             data = self._read(block_addr, 8)
-            x, y, w, h = struct.unpack('<hhhh', data)
+            x, y, w, h = struct.unpack('<hhhh', data)            
             results.append({
                 'id': color_id,
                 'x' : x,
@@ -844,16 +639,15 @@ class WonderCam:
                 'h' : h,
             })
         return results
-
-    # ============================================================
-    #   Utilidades extra
-    # ============================================================
+    def iniciar_modo_color(self, luz=None):
+        if not self.is_present():
+            return False
+        if not self.set_function(self.FUNC_COLOR):
+            return False
+        if luz is not None:
+            self.set_light(luz)
+        return True
     def set_light(self, on):
-        """Enciende/apaga la luz de relleno (registro 0x0030)."""
         self._write(self.REG_LIGHT, 1 if on else 0)
-
     def get_light(self):
-        """True si la luz de relleno está encendida."""
         return self._read(self.REG_LIGHT, 1)[0] != 0
-
-

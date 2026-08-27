@@ -61,40 +61,6 @@ The encoder measures wheel rotation. It is useful for estimating distance travel
 
 ---
 
-## 4. Repository Structure
-
-A recommended repository structure is shown below:
-
-```text
-wro-future-engineers-esp32/
-│
-├── README.md
-│
-├── src/
-│   └── esp32-micropython/
-│       ├── boot.py
-│       ├── main.py
-│       ├── componentes.py
-│       ├── movimiento_vehiculo.py
-│       └── ps4_uart.py
-
-│
-├── schemes/
-│   ├── wiring-diagram.png
-│   ├── pin-table.md
-│   └── sensor-placement.md
-│
-├── models/
-│
-├── other/
-│
-├── t-photos/
-│
-├── v-photos/
-│
-└── video/
-```
-
 The `src/esp32-micropython` folder contains the files that are copied to the ESP32. These are the files that the microcontroller needs in order to run the robot. The documentation folders should not be copied to the ESP32 because they may contain images, models, and large files.
 
 The `schemes` folder should contain wiring diagrams, pin tables, and sensor-position diagrams. It is very important to document which ESP32 pins are connected to each sensor or actuator. This prevents confusion when the robot is repaired or modified.
@@ -107,7 +73,7 @@ The `t-photos` folder is for team photos, while `v-photos` is for vehicle photos
 
 ---
 
-## 5. Source Code Files
+## 4. Source Code Files
 
 ### `boot.py`
 
@@ -147,7 +113,7 @@ The `CMD.md` file documents useful `mpremote` commands. It explains how to list 
 
 ---
 
-## 6. Software Requirements
+## 5. Software Requirements
 
 To use this project, the computer should have Python installed. The `mpremote` tool is used to communicate with the ESP32 running MicroPython. If `mpremote` is not installed, it can be installed with:
 
@@ -167,7 +133,7 @@ Replace `COM5` with the correct port for your computer. If the command lists fil
 
 ---
 
-## 7. Copying the Code to the ESP32
+## 6. Copying the Code to the ESP32
 
 Only the MicroPython source files should be copied to the ESP32. Do not copy the entire repository, because folders such as `v-photos`, `models`, and `video` may contain large files that are not needed by the microcontroller.
 
@@ -203,7 +169,7 @@ If `main.py` exists on the ESP32, it will also run automatically when the board 
 
 ---
 
-## 8. Recommended Pin Documentation
+## 7. Recommended Pin Documentation
 
 The actual pin configuration may change depending on the vehicle wiring. The project should include a pin table in `schemes/pin-table.md`. A recommended table format is:
 
@@ -230,7 +196,7 @@ Because the robot uses several sensors, it is very important to keep this table 
 
 ---
 
-## 9. Power and Safety Notes
+## 8. Power and Safety Notes
 
 The ESP32 should not power the motors directly. Motors require more current than the ESP32 pins can provide. The H-bridge should be connected to the motor power supply, while the ESP32 should provide only logic signals.
 
@@ -244,7 +210,7 @@ When testing the servo, disconnect the mechanical linkage or lift the front whee
 
 ---
 
-## 10. First Startup Procedure
+## 9. First Startup Procedure
 
 Before running the full robot program, follow this startup checklist:
 
@@ -266,7 +232,7 @@ A good first test is to run the program with the wheels lifted. Watch the serial
 
 ---
 
-## 11. Manual Control Testing
+## 10. Manual Control Testing
 
 Manual control is useful before autonomous testing. The robot should be able to drive forward, backward, turn left, turn right, and stop. If the project uses a PS4 controller through an external UART interface, the UART messages should be checked first.
 
@@ -286,7 +252,7 @@ If the robot moves backward when it should move forward, swap the motor wires or
 
 ---
 
-## 12. Servo Calibration
+## 11. Servo Calibration
 
 Servo calibration is one of the most important steps because steering errors affect every movement. The servo is controlled by PWM at 50 Hz. The code maps angles into pulse widths using minimum and maximum microsecond values.
 
@@ -316,7 +282,7 @@ A small steering step is useful for smooth manual control. A large steering step
 
 ---
 
-## 13. Motor Testing
+## 12. Motor Testing
 
 The DC motors are controlled through an H-bridge. The H-bridge uses two direction pins and one PWM enable pin. The motor class limits speed values to a safe PWM range and applies acceleration changes.
 
@@ -337,7 +303,7 @@ If the robot is too aggressive, reduce `velocidad_crucero` and `velocidad_giro`.
 
 ---
 
-## 14. Ultrasonic Sensor Usage
+## 13. Ultrasonic Sensor Usage
 
 The robot includes four ultrasonic sensors. These sensors measure distance by sending a sound pulse and measuring the echo time. They are useful for detecting walls, obstacles, and open spaces.
 
@@ -373,7 +339,7 @@ This basic behavior can later be improved with gyroscope-supported turns and cam
 
 ---
 
-## 15. Gyroscope and IMU Calibration
+## 14. Gyroscope and IMU Calibration
 
 The gyroscope measures angular velocity. By integrating angular velocity over time, the program can estimate the robot’s angle. This is useful for turning and orientation correction. However, gyroscopes have bias. Even when the robot is not moving, the gyroscope may report a small angular velocity. If this bias is not corrected, the estimated angle will drift.
 
@@ -392,7 +358,7 @@ For turning, the gyroscope can be used to stop a turn when the desired angle is 
 
 ---
 
-## 16. Encoder Usage
+## 15. Encoder Usage
 
 The encoder measures rotation. If the encoder is attached to a wheel or axle, the program can estimate distance traveled using the wheel perimeter. The basic formula is:
 
@@ -416,7 +382,7 @@ Encoder readings can be affected by wheel slip. For this reason, the encoder sho
 
 ---
 
-## 17. WonderCam Vision Module
+## 16. WonderCam Vision Module
 
 The WonderCam vision module can provide visual information through I2C. Depending on the selected function, it can detect color, lines, tags, or learned visual features. In this project, the camera is treated as a sensor that can provide simplified vision results to the ESP32.
 
@@ -439,7 +405,7 @@ Vision readings may be incomplete or unstable. It is better to confirm the same 
 
 ---
 
-## 18. Basic Autonomous Strategy
+## 17. Basic Autonomous Strategy
 
 The recommended autonomous strategy should be built in stages. Do not try to create a complete autonomous system in one step.
 
@@ -475,7 +441,7 @@ The most important principle is that the robot should always have a safe fallbac
 
 ---
 
-## 19. Suggested State Machine
+## 18. State Machine
 
 A clean autonomous program can be implemented as a state machine. A state machine helps avoid writing confusing nested conditions.
 
@@ -516,7 +482,7 @@ The advantage of this structure is that students can understand one behavior at 
 
 ---
 
-## 20. Calibration Files
+## 19. Calibration Files
 
 The `other/calibration.md` file should store the final calibration values. This file is very important because calibration values often change during testing.
 
@@ -538,10 +504,10 @@ Recommended content:
 - Maximum safe speed:
 
 ## Ultrasonic Sensors
-- Front safe distance:
-- Left desired distance:
-- Right desired distance:
-- Maximum valid distance:
+- Front safe distance
+- Left desired distance
+- Right desired distance
+- Maximum valid distance
 
 ## Gyroscope
 - I2C address:

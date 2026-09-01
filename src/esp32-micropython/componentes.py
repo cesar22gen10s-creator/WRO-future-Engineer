@@ -5,13 +5,6 @@ import time
 import math
 
 
-def _numero_finito(valor):
-    try:
-        return math.isfinite(valor)
-    except AttributeError:
-        return valor == valor and abs(valor) != float("inf")
-
-
 class Servo:
     def __init__(self, pin, angulo_inicial=0, pulso_min=518, pulso_max=2510, freq_hz=50):
         self.PULSO_MIN_US = pulso_min
@@ -206,6 +199,12 @@ class MotorPuenteH:
         self._aplicar_velocidad(hasta)
 
     def mover_directo(self, velocidad, direccion=0):
+        """
+        direccion:
+            0  = detenido
+            1  = adelante
+            -1 = atras
+        """
 
         velocidad = self._limitar_velocidad(velocidad)
 
@@ -226,6 +225,10 @@ class MotorPuenteH:
             return
 
         raise ValueError("direccion debe ser 0, 1 o -1")
+
+    def frenar(self, velocidad):
+        """Aplica el contrapulso usando la polaridad de retroceso probada."""
+        self.mover_directo(velocidad, -1)
 
     def acelerar(self, velocidad_objetivo, direccion="adelante", paso=200, delay_ms=50):
         velocidad_objetivo = self._limitar_velocidad(velocidad_objetivo)
@@ -446,137 +449,391 @@ class BMI160:
         if dt <= 0 or dt > 0.2:
             _, _, gz = self.leer_gyro_dps()
             gz_corregido = gz - self.bias_gz
-            if not _numero_finito(gz_corregido):
-                raise ValueError("velocidad angular no finita")
             if abs(gz_corregido) < self.umbral_ruido_dps:
                 gz_corregido = 0.0
             return self.angulo_z, gz_corregido
 
         _, _, gz = self.leer_gyro_dps()
         gz_corregido = gz - self.bias_gz
-        if not _numero_finito(gz_corregido):
-            raise ValueError("velocidad angular no finita")
 
         if abs(gz_corregido) < self.umbral_ruido_dps:
             gz_corregido = 0.0
 
-        nuevo_angulo = self.angulo_z + gz_corregido * dt
-        if not _numero_finito(nuevo_angulo):
-            raise ValueError("heading no finito")
-        self.angulo_z = nuevo_angulo
+        self.angulo_z += gz_corregido * dt
 
         if normalizar:
-            self.angulo_z = (self.angulo_z + 180.0) % 360.0 - 180.0
-            if self.angulo_z <= -180.0:
-                self.angulo_z += 360.0
+            while self.angulo_z > 180:
+                self.angulo_z -= 360
+            while self.angulo_z <= -180:
+                self.angulo_z += 360
 
         return self.angulo_z, gz_corregido
 
+class TCS3200:
+    def __init__(self, oe, s0, s1, s2, s3, out_pin):
+        self.oe = Pin(oe, Pin.OUT)
+        self.s0 = Pin(s0, Pin.OUT)
+        self.s1 = Pin(s1, Pin.OUT)
+        self.s2 = Pin(s2, Pin.OUT)
+        self.s3 = Pin(s3, Pin.OUT)
+        self.out = Pin(out_pin, Pin.IN)
 
+        self.habilitar(True)
+        self.set_escala(20)
 
-class WonderCam:
-    DEFAULT_ADDR = 0x32
-    FUNC_NONE           = 0
-    FUNC_FACE           = 1   # Reconocimiento facial
-    FUNC_OBJECT         = 2   # Reconocimiento de objetos
-    FUNC_CLASSIFICATION = 3   # Clasificación de imagen
-    FUNC_FEATURE        = 4   # Aprendizaje de características
-    FUNC_COLOR          = 5   # Reconocimiento de color (inferido:
-                            # el doc deja el 5 libre y describe
-                            # registros de color en 0x1000)
-    FUNC_LINE           = 6   # Seguimiento visual de línea
-    FUNC_TAG            = 7   # AprilTag
-    FUNC_QR             = 8   # QR
-    FUNC_BARCODE        = 9   # Código de barras
-    FUNC_NAMES = {
-        0: "Ninguna",
-        1: "Reconocimiento facial",
-        2: "Reconocimiento de objetos",
-        3: "Clasificación de imagen",
-        4: "Aprendizaje de características",
-        5: "Reconocimiento de color",
-        6: "Seguimiento de línea",
-        7: "Reconocimiento de tag",
-        8: "Lectura QR",
-        9: "Lectura de código de barras",
-    }
-    # ---- Registros del sistema ----
-    REG_FIRMWARE     = 0x0000   # 16 bytes ASCII tipo "v0.6.5"
-    REG_LIGHT        = 0x3000   # luz de relleno: 0=off, 1=on
-    REG_CURRENT_FUNC = 0x3500   # número de función (RW)
-    # ---- Registros de detección de color ----
-    REG_COLOR_BASE      = 0x0010   # leer aquí refresca resultados
-    REG_COLOR_NUM       = 0x0110   # cantidad de colores detectados
-    REG_COLOR_IDS       = 0x1002   # IDs (1 byte/color, hasta 0x1029)
-    REG_COLOR_RESULT1   = 0x3010   # primer bloque de 16 bytes
-    COLOR_RESULT_STRIDE = 0x1000   # 16 bytes por resultado
-    # ============================================================
-    #   Constructor
-    # ============================================================
-    def __init__(self, i2c, addr=DEFAULT_ADDR):
-        self.i2c = i2c
-        self.addr = addr
-    # ============================================================
-    # bajo nivel
-    # ============================================================
-    def _read(self, reg, n):
-        return self.i2c.readfrom_mem(self.addr, reg, n, addrsize=16)
-    def _write(self, reg, data):
-        if isinstance(data, int):
-            data = bytes([data & 0xFF])
-        self.i2c.writeto_mem(self.addr, reg, data, addrsize=16)
-    def is_present(self):
-        return self.addr in self.i2c.scan()
-    def get_firmware_version(self):
-        raw = self._read(self.REG_FIRMWARE, 16)
-        cleaned = raw.split(b'\x00')[0]   # cortar en el primer null
-        try:
-            return cleaned.decode('utf-8').strip()
-        except Exception:
-            return str(cleaned)
-    def get_current_function(self):
-        return self._read(self.REG_CURRENT_FUNC, 1)[0]
-    def get_current_function_name(self):
-        f = self.get_current_function()
-        return self.FUNC_NAMES.get(f, "Function ({})".format(f))
-    def set_function(self, func_num, timeout_s=3.5):
-        self._write(self.REG_CURRENT_FUNC, func_num)
-        deadline = time.ticks_add(time.ticks_ms(), int(timeout_s * 1000))
-        while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        # perfiles personalizados:
+        # nombre -> {
+        #   "rgb": (rn, gn, bn),
+        #   "clear_min": valor_minimo_opcional,
+        #   "clear_max": valor_maximo_opcional,
+        # }
+        self.perfiles = {}
+
+        # filtro temporal para uso en movimiento
+        self._ultima_zona_cruda = None
+        self._conteo_estable = 0
+        self._zona_confirmada = None
+        self._ultimo_cambio_ms = time.ticks_ms()
+
+    def habilitar(self, activo=True):
+        # OE activo en bajo
+        self.oe.value(0 if activo else 1)
+
+    def set_escala(self, porcentaje):
+        if porcentaje == 2:
+            self.s0.value(0)
+            self.s1.value(1)
+        elif porcentaje == 20:
+            self.s0.value(1)
+            self.s1.value(0)
+        elif porcentaje == 100:
+            self.s0.value(1)
+            self.s1.value(1)
+        else:
+            self.s0.value(0)
+            self.s1.value(0)
+
+    def set_filtro(self, color):
+        if color == "rojo":
+            self.s2.value(0)
+            self.s3.value(0)
+        elif color == "azul":
+            self.s2.value(0)
+            self.s3.value(1)
+        elif color == "clear":
+            self.s2.value(1)
+            self.s3.value(0)
+        elif color == "verde":
+            self.s2.value(1)
+            self.s3.value(1)
+        else:
+            raise ValueError("Color invalido")
+
+    def leer_frecuencia(self, muestras=3, timeout_us=120000):
+        total_periodo = 0
+        validas = 0
+
+        for _ in range(muestras):
+            t_alto = time_pulse_us(self.out, 1, timeout_us)
+            t_bajo = time_pulse_us(self.out, 0, timeout_us)
+
+            if t_alto > 0 and t_bajo > 0:
+                total_periodo += (t_alto + t_bajo)
+                validas += 1
+
+        if validas == 0:
+            return None
+
+        periodo_promedio = total_periodo / validas
+        return 1_000_000 / periodo_promedio
+
+    def leer_rgb(self):
+        resultado = {}
+
+        for color in ("rojo", "verde", "azul", "clear"):
+            self.set_filtro(color)
+            time.sleep_ms(2)  # pequeño tiempo de asentamiento
+            resultado[color] = self.leer_frecuencia(muestras=3)
+
+        return resultado
+
+    def leer_normalizado(self):
+        datos = self.leer_rgb()
+
+        r = datos["rojo"]
+        g = datos["verde"]
+        b = datos["azul"]
+        c = datos["clear"]
+
+        if None in (r, g, b, c) or c <= 0:
+            return None
+
+        return {
+            "rojo": r,
+            "verde": g,
+            "azul": b,
+            "clear": c,
+            "rn": r / c,
+            "gn": g / c,
+            "bn": b / c,
+        }
+
+    def registrar_perfil(self, nombre, rn, gn, bn, clear_min=0, clear_max=999999):
+        self.perfiles[nombre] = {
+            "rgb": (rn, gn, bn),
+            "clear_min": clear_min,
+            "clear_max": clear_max,
+        }
+
+    def registrar_perfil_desde_lectura(self, nombre, lecturas_promedio=8, pausa_ms=60):
+        suma_rn = 0.0
+        suma_gn = 0.0
+        suma_bn = 0.0
+        suma_c = 0.0
+        validas = 0
+
+        for _ in range(lecturas_promedio):
+            dato = self.leer_normalizado()
+            if dato is not None:
+                suma_rn += dato["rn"]
+                suma_gn += dato["gn"]
+                suma_bn += dato["bn"]
+                suma_c += dato["clear"]
+                validas += 1
+            time.sleep_ms(pausa_ms)
+
+        if validas == 0:
+            return None
+
+        prom_rn = suma_rn / validas
+        prom_gn = suma_gn / validas
+        prom_bn = suma_bn / validas
+        prom_c = suma_c / validas
+
+        # margen razonable para clear
+        clear_min = prom_c * 0.65
+        clear_max = prom_c * 1.35
+
+        self.registrar_perfil(
+            nombre,
+            prom_rn,
+            prom_gn,
+            prom_bn,
+            clear_min=clear_min,
+            clear_max=clear_max
+        )
+
+        return {
+            "nombre": nombre,
+            "rn": prom_rn,
+            "gn": prom_gn,
+            "bn": prom_bn,
+            "clear_prom": prom_c,
+            "clear_min": clear_min,
+            "clear_max": clear_max,
+        }
+
+    def _distancia(self, rn, gn, bn, perfil_rgb):
+        pr, pg, pb = perfil_rgb
+        return math.sqrt(
+            (rn - pr) ** 2 +
+            (gn - pg) ** 2 +
+            (bn - pb) ** 2
+        )
+
+    def clasificar_crudo(self, umbral_distancia=0.08):
+        dato = self.leer_normalizado()
+        if dato is None:
+            return None, None
+
+        rn = dato["rn"]
+        gn = dato["gn"]
+        bn = dato["bn"]
+        c = dato["clear"]
+
+        mejor_nombre = None
+        mejor_dist = None
+
+        for nombre, perfil in self.perfiles.items():
+            if not (perfil["clear_min"] <= c <= perfil["clear_max"]):
+                continue
+
+            dist = self._distancia(rn, gn, bn, perfil["rgb"])
+
+            if mejor_dist is None or dist < mejor_dist:
+                mejor_dist = dist
+                mejor_nombre = nombre
+
+        if mejor_nombre is None:
+            return "desconocido", dato
+
+        if mejor_dist > umbral_distancia:
+            return "desconocido", dato
+
+        return mejor_nombre, dato
+
+    def clasificar_estable(self, umbral_distancia=0.08, repeticiones=3, bloqueo_ms=250):
+        zona_cruda, dato = self.clasificar_crudo(umbral_distancia=umbral_distancia)
+
+        ahora = time.ticks_ms()
+
+        if zona_cruda == self._ultima_zona_cruda:
+            self._conteo_estable += 1
+        else:
+            self._ultima_zona_cruda = zona_cruda
+            self._conteo_estable = 1
+
+        evento = None
+
+        if (
+            zona_cruda not in (None, "desconocido")
+            and self._conteo_estable >= repeticiones
+            and zona_cruda != self._zona_confirmada
+            and time.ticks_diff(ahora, self._ultimo_cambio_ms) > bloqueo_ms
+        ):
+            self._zona_confirmada = zona_cruda
+            self._ultimo_cambio_ms = ahora
+            evento = zona_cruda
+
+        return {
+            "zona_cruda": zona_cruda,
+            "zona_confirmada": self._zona_confirmada,
+            "evento": evento,   # solo se activa cuando entra estable a una nueva zona
+            "dato": dato,
+            "conteo_estable": self._conteo_estable,
+        }
+    
+
+    class WonderCam:
+        DEFAULT_ADDR = 0x32
+
+        FUNC_NONE           = 0
+        FUNC_FACE           = 1   # Reconocimiento facial
+        FUNC_OBJECT         = 2   # Reconocimiento de objetos
+        FUNC_CLASSIFICATION = 3   # Clasificación de imagen
+        FUNC_FEATURE        = 4   # Aprendizaje de características
+        FUNC_COLOR          = 5   # Reconocimiento de color (inferido:
+                                # el doc deja el 5 libre y describe
+                                # registros de color en 0x1000)
+        FUNC_LINE           = 6   # Seguimiento visual de línea
+        FUNC_TAG            = 7   # AprilTag
+        FUNC_QR             = 8   # QR
+        FUNC_BARCODE        = 9   # Código de barras
+
+        FUNC_NAMES = {
+            0: "Ninguna",
+            1: "Reconocimiento facial",
+            2: "Reconocimiento de objetos",
+            3: "Clasificación de imagen",
+            4: "Aprendizaje de características",
+            5: "Reconocimiento de color",
+            6: "Seguimiento de línea",
+            7: "Reconocimiento de tag",
+            8: "Lectura QR",
+            9: "Lectura de código de barras",
+        }
+
+        # ---- Registros del sistema ----
+        REG_FIRMWARE     = 0x0000   # 16 bytes ASCII tipo "v0.6.5"
+        REG_LIGHT        = 0x0030   # luz de relleno: 0=off, 1=on
+        REG_CURRENT_FUNC = 0x0035   # número de función (RW)
+
+        # ---- Registros de detección de color ----
+        REG_COLOR_BASE      = 0x1000   # leer aquí refresca resultados
+        REG_COLOR_NUM       = 0x1001   # cantidad de colores detectados
+        REG_COLOR_IDS       = 0x1002   # IDs (1 byte/color, hasta 0x1029)
+        REG_COLOR_RESULT1   = 0x1030   # primer bloque de 16 bytes
+        COLOR_RESULT_STRIDE = 0x10     # 16 bytes por resultado
+
+        # ============================================================
+        #   Constructor
+        # ============================================================
+        def __init__(self, i2c, addr=DEFAULT_ADDR):
+            self.i2c = i2c
+            self.addr = addr
+
+        # ============================================================
+        # bajo nivel
+        # ============================================================
+        def _read(self, reg, n):
+            return self.i2c.readfrom_mem(self.addr, reg, n, addrsize=16)
+
+        def _write(self, reg, data):
+            if isinstance(data, int):
+                data = bytes([data & 0xFF])
+            self.i2c.writeto_mem(self.addr, reg, data, addrsize=16)
+
+        def is_present(self):
+            return self.addr in self.i2c.scan()
+
+        def get_firmware_version(self):
+            raw = self._read(self.REG_FIRMWARE, 16)
+            cleaned = raw.split(b'\x00')[0]   # cortar en el primer null
+            try:
+                return cleaned.decode('utf-8').strip()
+            except Exception:
+                return str(cleaned)
+
+        def get_current_function(self):
+            return self._read(self.REG_CURRENT_FUNC, 1)[0]
+
+        def get_current_function_name(self):
+            f = self.get_current_function()
+            return self.FUNC_NAMES.get(f, "Function ({})".format(f))
+
+        def set_function(self, func_num):
+            self._write(self.REG_CURRENT_FUNC, func_num)
             if self.get_current_function() == func_num:
                 return True
-            time.sleep_ms(100)
-        return False
-    def get_color_detections(self):
-        self._read(self.REG_COLOR_BASE, 1)
-        header = self._read(self.REG_COLOR_BASE, 48)
-        time.sleep_ms(200)
-        num = header[1]
-        if num == 0:
-            return []
-        results = []
-        for i in range(num):
-            color_id = header[2 + i]
-            block_addr = self.REG_COLOR_RESULT1 + i * self.COLOR_RESULT_STRIDE
-            data = self._read(block_addr, 8)
-            x, y, w, h = struct.unpack('<hhhh', data)            
-            results.append({
-                'id': color_id,
-                'x' : x,
-                'y' : y,
-                'w' : w,
-                'h' : h,
-            })
-        return results
-    def iniciar_modo_color(self, luz=None):
-        if not self.is_present():
-            return False
-        if not self.set_function(self.FUNC_COLOR):
-            return False
-        if luz is not None:
-            self.set_light(luz)
-        return True
-    def set_light(self, on):
-        self._write(self.REG_LIGHT, 1 if on else 0)
-    def get_light(self):
-        return self._read(self.REG_LIGHT, 1)[0] != 0
+            else:
+                return False
+
+        def get_color_detections(self):
+            self._read(self.REG_COLOR_BASE, 1)
+
+            # Leer: 0x1000..0x102F
+            #   offset 0  (0x1000) -> función actual / refresh
+            #   offset 1  (0x1001) -> número de colores
+            #   offset 2.. (0x1002) -> IDs (1 byte cada uno)
+            header = self._read(self.REG_COLOR_BASE, 48)
+            num = header[1]
+            if num == 0:
+                return []
+
+            results = []
+            for i in range(num):
+                color_id = header[2 + i]
+                # Cada resultado: 16 bytes a partir de 0x1030
+                # Los primeros 8 bytes son X, Y, W, H (16-bit signed, little-endian, si la camara presenta error con esta traduccion probablemente los bytes se lean al reves)
+                block_addr = self.REG_COLOR_RESULT1 + i * self.COLOR_RESULT_STRIDE
+                data = self._read(block_addr, 8)
+                x, y, w, h = struct.unpack('<hhhh', data)
+                results.append({
+                    'id': color_id,
+                    'x' : x,
+                    'y' : y,
+                    'w' : w,
+                    'h' : h,
+                })
+            return results
+
+        def iniciar_modo_color(self, luz=None):
+            if not self.is_present():
+                return False
+            if not self.set_function(self.FUNC_COLOR):
+                return False
+            if luz is not None:
+                self.set_light(luz)
+            return True
+
+        def set_light(self, on):
+            self._write(self.REG_LIGHT, 1 if on else 0)
+
+        def get_light(self):
+            return self._read(self.REG_LIGHT, 1)[0] != 0
+
+
+# Conserva el driver humano y permite importarlo como dispositivo independiente.
+WonderCam = TCS3200.WonderCam
+
+

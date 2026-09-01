@@ -1,10 +1,7 @@
 import math
-import time
 
 import config
 
-def ahora_ms():
-    return time.ticks_ms()
 
 def numero_finito(valor):
     if not isinstance(valor, (int, float)):
@@ -13,17 +10,6 @@ def numero_finito(valor):
         return math.isfinite(valor)
     except (AttributeError, OverflowError, TypeError):
         return valor == valor and abs(valor) != float("inf")
-
-
-def format1(valor):
-    return "{:.1f}".format(valor) if numero_finito(valor) else str(valor)
-
-
-def diferencia_ms(ahora_ms, antes_ms):
-    try:
-        return time.ticks_diff(ahora_ms, antes_ms)
-    except AttributeError:
-        return ahora_ms - antes_ms
 
 
 def normalizar_angulo(angulo):
@@ -47,24 +33,15 @@ def limitar(valor, minimo, maximo):
     return valor
 
 
-def comando_stick(valor, minimo=-511, maximo=512, zona_muerta=10):
-    if not numero_finito(valor):
-        return 0.0
-    valor = limitar(int(valor), minimo, maximo)
-    if abs(valor) <= zona_muerta:
-        return 0.0
-    if valor < 0:
-        return valor / abs(minimo)
-    return valor / maximo
-
-
 def control_heading(error, kp):
-    if not numero_finito(error):
+    if not numero_finito(error) or config.ERROR_HEADING_MAX <= 0:
         return 0.0
-    escala = config.ERROR_HEADING_MAX
-    if escala <= 0:
-        return 0.0
-    comando = -config.SIGNO_HEADING_DERECHA * kp * error / escala
+    comando = (
+        -config.SIGNO_HEADING_DERECHA
+        * kp
+        * error
+        / config.ERROR_HEADING_MAX
+    )
     return limitar(comando, -1.0, 1.0)
 
 
@@ -80,22 +57,16 @@ def control_giro(error):
 
 
 def control_correccion_tof(asimetria):
-    """Convierte la asimetria de los ToF en correccion de pasillo.
-
-    Una lectura mayor a la izquierda produce correccion hacia la izquierda
-    (comando negativo); el signo del montaje se calibra en config.
-    """
     if not numero_finito(asimetria):
         return 0.0
     if abs(asimetria) <= config.ZONA_MUERTA_ASIMETRIA_TOF:
         return 0.0
-    return limitar(
+    comando = (
         config.SIGNO_CORRECCION_TOF
         * config.KP_CORRECCION_TOF
-        * asimetria,
-        -1.0,
-        1.0,
+        * asimetria
     )
+    return limitar(comando, -1.0, 1.0)
 
 
 def combinar_controles(heading, correccion):
@@ -106,14 +77,19 @@ def comando_a_angulo_servo(comando, en_retroceso=False):
     if not numero_finito(comando):
         comando = 0.0
     comando = limitar(comando, -1.0, 1.0)
+
     if config.INVERTIR_COMANDO_SERVO:
         comando = -comando
     if en_retroceso and config.INVERTIR_SERVO_EN_RETROCESO:
         comando = -comando
+
     if comando < 0:
-        angulo = config.SERVO_CENTRO + (-comando) * (config.SERVO_IZQUIERDA - config.SERVO_CENTRO)
+        recorrido = config.SERVO_IZQUIERDA - config.SERVO_CENTRO
+        angulo = config.SERVO_CENTRO + (-comando) * recorrido
     else:
-        angulo = config.SERVO_CENTRO + comando * (config.SERVO_DERECHA - config.SERVO_CENTRO)
+        recorrido = config.SERVO_DERECHA - config.SERVO_CENTRO
+        angulo = config.SERVO_CENTRO + comando * recorrido
+
     minimo = min(config.SERVO_DERECHA, config.SERVO_IZQUIERDA)
     maximo = max(config.SERVO_DERECHA, config.SERVO_IZQUIERDA)
     return limitar(angulo, minimo, maximo)
@@ -127,16 +103,7 @@ def avanzar_hacia(actual, objetivo, paso):
     return actual + paso if objetivo > actual else actual - paso
 
 
-def orden_vigente(orden, ahora_ms):
-    try:
-        emitida = orden["emitida_ms"]
-        vigencia = orden["vigencia_ms"]
-        seq = orden["seq"]
-    except (KeyError, TypeError):
-        return False
-    if not numero_finito(emitida) or not numero_finito(vigencia):
-        return False
-    if not isinstance(seq, int) or seq <= 0 or vigencia < 0:
-        return False
-    edad = diferencia_ms(ahora_ms, emitida)
-    return 0 <= edad <= vigencia
+def actualizar_contador_seq(seq, ultimo_seq, ciclos_sin_actualizar):
+    if isinstance(seq, int) and seq > 0 and seq != ultimo_seq:
+        return seq, 0, True
+    return ultimo_seq, ciclos_sin_actualizar + 1, False

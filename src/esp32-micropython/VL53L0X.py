@@ -4,9 +4,7 @@ import utime#type:ignore
 from machine import Timer#type:ignore
 import time
 
-# Limita cada espera interna. uasyncio es cooperativo: un segundo por bucle
-# congelaria IMU, navegacion y actuadores.
-_IO_TIMEOUT = 70
+_IO_TIMEOUT = 1000
 _SYSRANGE_START = const(0x00)
 _EXTSUP_HV = const(0x89)
 _MSRC_CONFIG = const(0x60)
@@ -207,8 +205,8 @@ class VL53L0X:
         spads_enabled = 0
         for i in range(48):
             if i < 12 and is_aperture or spads_enabled >= spad_count:
-                spad_map[i // 8] &= ~(1 << (i % 8))
-            elif spad_map[i // 8] & (1 << (i % 8)):
+                spad_map[i // 8] &= ~(1 << (i >> 2))
+            elif spad_map[i // 8] & (1 << (i >> 2)):
                 spads_enabled += 1
 
         self._registers(_SPAD_ENABLES, spad_map, struct='6B')

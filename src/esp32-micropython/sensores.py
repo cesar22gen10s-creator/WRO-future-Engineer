@@ -53,7 +53,7 @@ def _leer_sonar(sensor, muestra):
     try:
         valor = sensor.leer_cm()
         if valor == None:
-            valor == 260
+            valor = 260
         if not _distancia_valida(
             valor,
             config.SONAR_MIN_VALIDO_CM,

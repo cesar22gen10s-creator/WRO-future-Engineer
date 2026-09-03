@@ -42,7 +42,10 @@ def activar():
         "sentido_pista": None,
         "sentido_giro": None,
         "giro_pendiente": None,
+        "apertura_tof": None,
+        "apertura_sonar": None,
         "candidato_giro": None,
+        "candidato_giro_alta_confianza": False,
         "confirmaciones_giro_lateral": 0,
         "confirmaciones_fin_giro": 0,
         "esquinas": 0,
@@ -216,7 +219,7 @@ def _observar_tof_lateral(sistema, frescas):
         and td <= config.TOF_LATERAL_RANGO_CONTROL_CM
     )
     asimetria = (ti - td) / (ti + td) if pareja_control and ti + td > 0 else None
-    candidato = None
+    apertura_tof = None
     if ti is not None and td is not None:
         abre_izquierda = bool(
             ti >= config.TOF_INICIO_DETECCION_APERTURA_CM
@@ -229,7 +232,7 @@ def _observar_tof_lateral(sistema, frescas):
             and td >= ti * config.FACTOR_APERTURA_TOF
         )
         if abre_izquierda != abre_derecha:
-            candidato = IZQUIERDA if abre_izquierda else DERECHA
+            apertura_tof = IZQUIERDA if abre_izquierda else DERECHA
     peligro_i = ti is not None and ti <= config.TOF_LATERAL_PELIGRO_CM
     peligro_d = td is not None and td <= config.TOF_LATERAL_PELIGRO_CM
     proteccion = 0.0
@@ -238,7 +241,7 @@ def _observar_tof_lateral(sistema, frescas):
     elif peligro_d and not peligro_i:
         proteccion = abs(config.COMANDO_EVASION_TOF)
     return {
-        "candidato": candidato,
+        "apertura_tof": apertura_tof,
         "correccion": utilidades.control_correccion_tof(asimetria),
         "peligro_i": peligro_i,
         "peligro_d": peligro_d,
@@ -247,7 +250,7 @@ def _observar_tof_lateral(sistema, frescas):
     }
 
 
-def _candidato_sonar(sistema, frescas):
+def _observar_apertura_sonar(sistema, frescas):
     sonar = sistema["sonar"]
     izquierdo = _valor(sonar["izquierdo"], frescas["si"])
     derecho = _valor(sonar["derecho"], frescas["sd"])
@@ -263,50 +266,107 @@ def _candidato_sonar(sistema, frescas):
         and derecho - izquierdo >= config.DELTA_APERTURA_SONAR_CM
         and derecho >= izquierdo * config.FACTOR_APERTURA_SONAR
     )
-    candidato = None
+    apertura_sonar = None
     if abre_i != abre_d:
-        candidato = IZQUIERDA if abre_i else DERECHA
-    return candidato, (sonar["izquierdo"]["seq"], sonar["derecho"]["seq"])
+        apertura_sonar = IZQUIERDA if abre_i else DERECHA
+    return apertura_sonar, (
+        sonar["izquierdo"]["seq"],
+        sonar["derecho"]["seq"],
+    )
+
+
+def _consumir_secuencias_sonar(nav, secuencias):
+    if secuencias is None:
+        return False
+    if (
+        secuencias[0] == nav["ultimo_seq_izquierdo"]
+        or secuencias[1] == nav["ultimo_seq_derecho"]
+    ):
+        return False
+    nav["ultimo_seq_izquierdo"], nav["ultimo_seq_derecho"] = secuencias
+    return True
+
+
+def _resolver_evidencia_giro(
+    apertura_tof,
+    apertura_sonar,
+    aceptar_sonar,
+    sentido_pista,
+):
+    if apertura_tof is not None and apertura_sonar is not None:
+        if apertura_tof == apertura_sonar:
+            return apertura_tof, True
+        if sentido_pista in (apertura_tof, apertura_sonar):
+            return sentido_pista, False
+        return None, False
+    if apertura_tof is not None:
+        return apertura_tof, False
+    if aceptar_sonar:
+        return apertura_sonar, False
+    return None, False
+
+
+def _actualizar_confirmaciones_giro(
+    nav,
+    evidencia_ciclo,
+    evidencia_alta_confianza,
+):
+    candidato_actual = nav["candidato_giro"]
+    if evidencia_ciclo is None:
+        nav["candidato_giro"] = None
+        nav["candidato_giro_alta_confianza"] = False
+        nav["confirmaciones_giro_lateral"] = 0
+    elif candidato_actual is None:
+        nav["candidato_giro"] = evidencia_ciclo
+        nav["candidato_giro_alta_confianza"] = evidencia_alta_confianza
+        nav["confirmaciones_giro_lateral"] = 1
+    elif evidencia_ciclo == candidato_actual:
+        nav["candidato_giro_alta_confianza"] = bool(
+            nav["candidato_giro_alta_confianza"]
+            and evidencia_alta_confianza
+        )
+        nav["confirmaciones_giro_lateral"] += 1
+    else:
+        nav["candidato_giro"] = None
+        nav["candidato_giro_alta_confianza"] = False
+        nav["confirmaciones_giro_lateral"] = 0
+
+
+def _promover_candidato_confirmado(nav):
+    if (
+        nav["candidato_giro"] in (IZQUIERDA, DERECHA)
+        and nav["confirmaciones_giro_lateral"]
+        >= config.MUESTRAS_CONFIRMAR_GIRO_LATERAL
+    ):
+        nav["giro_pendiente"] = nav["candidato_giro"]
+        if (
+            nav["sentido_pista"] is None
+            and nav["candidato_giro_alta_confianza"]
+        ):
+            nav["sentido_pista"] = nav["candidato_giro"]
 
 
 def _actualizar_candidato(nav, sistema, frescas, tofs, aceptar_sonar=False):
     if nav["giro_pendiente"] in (IZQUIERDA, DERECHA):
         return
-    pista_tof = tofs["candidato"]
-    if pista_tof is not None and pista_tof != nav["candidato_giro"]:
-        nav["candidato_giro"] = pista_tof
-        nav["confirmaciones_giro_lateral"] = 0
-    candidato_sonar, secuencias = _candidato_sonar(sistema, frescas)
-    if secuencias is None:
+    apertura_tof = tofs["apertura_tof"]
+    apertura_sonar, secuencias = _observar_apertura_sonar(sistema, frescas)
+    if not _consumir_secuencias_sonar(nav, secuencias):
         return
-    if (
-        nav["ultimo_seq_izquierdo"] == 0
-        or nav["ultimo_seq_derecho"] == 0
-    ):
-        nav["ultimo_seq_izquierdo"], nav["ultimo_seq_derecho"] = secuencias
-        return
-    if (
-        secuencias[0] == nav["ultimo_seq_izquierdo"]
-        or secuencias[1] == nav["ultimo_seq_derecho"]
-    ):
-        return
-    nav["ultimo_seq_izquierdo"], nav["ultimo_seq_derecho"] = secuencias
-    if nav["candidato_giro"] is None and not aceptar_sonar:
-        return
-    if candidato_sonar is None:
-        nav["confirmaciones_giro_lateral"] = 0
-        return
-    if candidato_sonar != nav["candidato_giro"]:
-        nav["candidato_giro"] = candidato_sonar
-        nav["confirmaciones_giro_lateral"] = 1
-    else:
-        nav["confirmaciones_giro_lateral"] += 1
-    if (
-        nav["confirmaciones_giro_lateral"]
-        >= config.MUESTRAS_CONFIRMAR_GIRO_LATERAL
-    ):
-        nav["giro_pendiente"] = nav["candidato_giro"]
-        nav["sentido_pista"] = nav["candidato_giro"]
+    nav["apertura_tof"] = apertura_tof
+    nav["apertura_sonar"] = apertura_sonar
+    evidencia_ciclo, evidencia_alta_confianza = _resolver_evidencia_giro(
+        apertura_tof,
+        apertura_sonar,
+        aceptar_sonar,
+        nav["sentido_pista"],
+    )
+    _actualizar_confirmaciones_giro(
+        nav,
+        evidencia_ciclo,
+        evidencia_alta_confianza,
+    )
+    _promover_candidato_confirmado(nav)
 
 
 def _orden_recta(nav, velocidad, tofs):
@@ -406,6 +466,7 @@ def _confirmar_fin_giro(nav, frente):
     nav["sentido_giro"] = None
     nav["giro_pendiente"] = None
     nav["candidato_giro"] = None
+    nav["candidato_giro_alta_confianza"] = False
     nav["confirmaciones_giro_lateral"] = 0
     if (
         config.VUELTAS_OBJETIVO > 0

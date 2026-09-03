@@ -48,14 +48,14 @@ INVERTIR_SERVO_EN_RETROCESO = True
 # ============================================================
 
 VELOCIDAD_AVANCE = 800
-VELOCIDAD_APROXIMACION = 620
-VELOCIDAD_GIRO = 700
-VELOCIDAD_RETROCESO = 700
+VELOCIDAD_APROXIMACION = 750
+VELOCIDAD_GIRO = 750
+VELOCIDAD_RETROCESO = 800
 
 # Contrapulso breve para cancelar la inercia al detectar frente critico.
-PWM_FRENO_CONTRAPULSO = 300
+PWM_FRENO_CONTRAPULSO = 500
 PAUSA_NEUTRAL_FRENO_MS = 10
-DURACION_FRENO_CONTRAPULSO_MS = 60
+DURACION_FRENO_CONTRAPULSO_MS = 200
 
 
 # ============================================================

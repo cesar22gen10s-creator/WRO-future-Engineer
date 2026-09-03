@@ -47,13 +47,13 @@ def _linea_debug():
     detecciones = camara.get("valor")
     cantidad_camara = len(detecciones) if isinstance(detecciones, list) else 0
     return (
-        "MODO:{} MN:{} ACT:{} "
-        "H:{}/REF:{}/ERR:{}#{} {} "
-        "S[F:{} I:{} D:{}] T[F:{} I:{} D:{}] "
-        "ENC:{:.1f}#{} "
-        "MODO_MOTOR:{} M[PWM:{} DIR:{} OK:{}] SV[CMD:{:.2f} OK:{}] "
-        "GIRO[C:{} P:{} SENT:{}] E:{} V:{} "
-        "CAM:{}:{}#{} TR:{}"
+        "MODO:{} MANIOBRA:{} ACT:{} "
+        "H:{}/REF:{}/ERR:{}SECUENCIA:{} {} "
+        "SONAR[FRONT:{} sonarIzq:{} sonarDer:{}] Tof[FRONT:{} tofIzq:{} tofDer:{}] "
+        "ENCODER DISTANCIAS:{:.1f} ENCODER SECUENCIA:{} "
+        "MODO_MOTOR:{} M[PWM:{} DIR:{} OK:{}] SERVO[CMD:{:.2f} OK:{}] "
+        "GIRO[TOF:{} SON:{} C:{} CONF:{} P:{} SENT:{}] E:{} V:{} "
+        "CAM:{}:{}CAMA SECUENCIA:{} TR:{}"
     ).format(
         nav["modo"],
         nav["maniobra"],
@@ -77,7 +77,10 @@ def _linea_debug():
         motor["ok"],
         servo["comando"],
         servo["ok"],
+        nav["apertura_tof"],
+        nav["apertura_sonar"],
         nav["candidato_giro"],
+        nav["confirmaciones_giro_lateral"],
         nav["giro_pendiente"],
         nav["sentido_pista"],
         nav["esquinas"],
